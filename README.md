@@ -43,25 +43,39 @@ node index.js [wallet] [options]
 | Option | Description |
 |--------|-------------|
 | `wallet` | Proxy wallet address (`0x…`). Falls back to `WALLET_ADDRESS` in `.env`. |
-| `--out <dir>` | Output directory (default: `./out`) |
+| `--out <dir>` | Base output directory (default: `./out`); artifacts go in `<dir>/<wallet>/` |
 | `--no-gamma` | Skip Gamma resolution lookup |
 | `--include-open` | Also print convexity distribution including open positions at mark-to-market |
 | `--offline <file>` | Re-run analysis from a saved `activity.json` (no API calls) |
-| `--positions <file>` | Positions dump to pair with `--offline` (default: empty) |
+| `--positions <file>` | Positions dump to pair with `--offline` (default: `<wallet-dir>/positions.json`) |
 
 ### Offline mode
 
 Live runs write raw API dumps so you can re-analyze without hitting the network:
 
 ```bash
-node index.js --offline ./out/activity.json --positions ./out/positions.json
+node index.js 0xYourWalletAddressHere
+# → ./out/0xyourwalletaddresshere/
+
+node index.js --offline ./out/0xYourWallet.../activity.json
+node index.js --offline ./out/activity.json   # wallet inferred from proxyWallet
 ```
 
-If `resolution.json` and `closed-positions.json` exist in the output directory, they are loaded automatically.
+If `resolution.json` and `closed-positions.json` exist in the wallet output directory, they are loaded automatically.
 
 ## Output artifacts
 
-All files are written to `--out` (default `./out/`):
+Each wallet gets its own folder under `--out` (default `./out/`):
+
+```
+out/
+  0x6916cc00aa1c3e75ecf4081df7cae7d2f3592fd4/
+    activity.json
+    positions.json
+    ...
+  0xc03ce4d8af842ca6251ac57228b3ffb166ed50af/
+    ...
+```
 
 | File | Description |
 |------|-------------|
@@ -72,7 +86,7 @@ All files are written to `--out` (default `./out/`):
 | `ledger.csv` | One row per ticket (cost, proceeds, P&amp;L, status) |
 | `convexity_resolved.csv` | Distribution table for resolved tickets only |
 | `convexity_allin.csv` | Distribution including open MTM (only with `--include-open`) |
-| `summary.json` | Machine-readable rollup of portfolio and distribution stats |
+| `summary.json` | Machine-readable rollup (`wallet`, portfolio, distribution stats) |
 
 ## Convexity buckets
 

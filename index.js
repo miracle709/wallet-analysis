@@ -3,16 +3,15 @@
 //
 // Usage:
 //   node index.js [wallet] [--out ./out] [--no-gamma] [--include-open]
-//   node index.js --offline ./out/activity.json [--positions ./out/positions.json]
+//   node index.js --offline ./out/0x.../activity.json [--positions ./out/0x.../positions.json]
 //
 // Wallet: pass as first arg, or set WALLET_ADDRESS in .env / environment.
 // CLI arg overrides WALLET_ADDRESS when both are set.
 //
-// Live pull writes raw dumps so you can re-run analysis offline without re-hitting
-// the API (and so the pull is auditable).
+// Artifacts are written under --out/<wallet>/ (one folder per wallet).
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { loadEnv } from './lib/env.js';
 import { fetchAllActivity, fetchAllPositions, fetchAllClosedPositions, fetchResolution } from './lib/api.js';
 import {
@@ -30,6 +29,8 @@ import {
   writeLedgerCsv, writeDistributionCsv,
 } from './lib/report.js';
 
+const WALLET_RE = /^0x[0-9a-f]{40}$/;
+
 function parseArgs(argv) {
   const a = { _: [], out: './out', gamma: true, includeOpen: false, offline: null, positions: null };
   for (let i = 0; i < argv.length; i++) {
@@ -44,13 +45,41 @@ function parseArgs(argv) {
   return a;
 }
 
+function resolveWalletOutDir(baseOut, wallet) {
+  const w = wallet.toLowerCase();
+  const base = baseOut.replace(/[/\\]+$/, '');
+  const leaf = base.split(/[/\\]/).pop();
+  if (leaf === w) return base;
+  return join(base, w);
+}
+
+function detectWalletFromActivity(activity, offlinePath) {
+  for (const ev of activity) {
+    const pw = ev?.proxyWallet;
+    if (typeof pw === 'string' && WALLET_RE.test(pw.toLowerCase())) return pw.toLowerCase();
+  }
+  if (offlinePath) {
+    const parent = dirname(offlinePath);
+    const leaf = parent.split(/[/\\]/).pop();
+    if (leaf && WALLET_RE.test(leaf.toLowerCase())) return leaf.toLowerCase();
+  }
+  return null;
+}
+
+function resolveOfflineOutDir(baseOut, wallet, offlinePath) {
+  const parent = dirname(offlinePath);
+  const leaf = parent.split(/[/\\]/).pop();
+  if (leaf === wallet.toLowerCase()) return parent;
+  return resolveWalletOutDir(baseOut, wallet);
+}
+
 function loadClosedPositions(outDir, positionsPath) {
   const closedPath = join(outDir, 'closed-positions.json');
   if (existsSync(closedPath)) {
     return JSON.parse(readFileSync(closedPath, 'utf8'));
   }
   if (positionsPath) {
-    const dir = join(positionsPath, '..');
+    const dir = dirname(positionsPath);
     const sibling = join(dir, 'closed-positions.json');
     if (existsSync(sibling)) return JSON.parse(readFileSync(sibling, 'utf8'));
   }
@@ -60,21 +89,30 @@ function loadClosedPositions(outDir, positionsPath) {
 async function main() {
   loadEnv();
   const args = parseArgs(process.argv.slice(2));
-  mkdirSync(args.out, { recursive: true });
 
-  let activity, positions, closedPositions;
+  let activity, positions, closedPositions, wallet, outDir;
 
   if (args.offline) {
     console.log(`Loading activity from ${args.offline}`);
     activity = JSON.parse(readFileSync(args.offline, 'utf8'));
-    positions = args.positions ? JSON.parse(readFileSync(args.positions, 'utf8')) : [];
-    closedPositions = loadClosedPositions(args.out, args.positions);
+    wallet = detectWalletFromActivity(activity, args.offline);
+    if (!wallet) {
+      console.error('Could not detect wallet from activity (missing proxyWallet).');
+      process.exit(1);
+    }
+    outDir = resolveOfflineOutDir(args.out, wallet, args.offline);
+    mkdirSync(outDir, { recursive: true });
+
+    const positionsPath = args.positions || join(outDir, 'positions.json');
+    positions = existsSync(positionsPath) ? JSON.parse(readFileSync(positionsPath, 'utf8')) : [];
+    closedPositions = loadClosedPositions(outDir, positionsPath);
     if (closedPositions.length) {
       console.log(`Loaded ${closedPositions.length} closed positions from cache.`);
     }
+    console.log(`Wallet ${wallet} → output ${outDir}/`);
   } else {
-    const wallet = (args._[0] || process.env.WALLET_ADDRESS || '').toLowerCase();
-    if (!/^0x[0-9a-f]{40}$/.test(wallet)) {
+    wallet = (args._[0] || process.env.WALLET_ADDRESS || '').toLowerCase();
+    if (!WALLET_RE.test(wallet)) {
       console.error(
         'Provide a wallet address:\n' +
         '  node index.js 0x...                    (CLI arg)\n' +
@@ -83,6 +121,9 @@ async function main() {
       );
       process.exit(1);
     }
+    outDir = resolveWalletOutDir(args.out, wallet);
+    mkdirSync(outDir, { recursive: true });
+
     console.log(`Pulling full activity ledger for ${wallet} ...`);
     activity = await fetchAllActivity(wallet, {
       onPage: (total) => process.stdout.write(`\r  activity events: ${total}   `),
@@ -99,9 +140,9 @@ async function main() {
     });
     process.stdout.write('\n');
 
-    writeFileSync(join(args.out, 'activity.json'), JSON.stringify(activity, null, 0));
-    writeFileSync(join(args.out, 'positions.json'), JSON.stringify(positions, null, 0));
-    writeFileSync(join(args.out, 'closed-positions.json'), JSON.stringify(closedPositions, null, 0));
+    writeFileSync(join(outDir, 'activity.json'), JSON.stringify(activity, null, 0));
+    writeFileSync(join(outDir, 'positions.json'), JSON.stringify(positions, null, 0));
+    writeFileSync(join(outDir, 'closed-positions.json'), JSON.stringify(closedPositions, null, 0));
   }
 
   console.log(`\nReconstructing tickets from ${activity.length} events ...`);
@@ -121,12 +162,12 @@ async function main() {
     console.log(`Resolving ${conds.length} markets via Gamma ...`);
     resolution = await fetchResolution(conds);
     writeFileSync(
-      join(args.out, 'resolution.json'),
+      join(outDir, 'resolution.json'),
       JSON.stringify([...resolution.entries()], null, 0)
     );
   } else if (args.offline) {
     try {
-      const r = JSON.parse(readFileSync(join(args.out, 'resolution.json'), 'utf8'));
+      const r = JSON.parse(readFileSync(join(outDir, 'resolution.json'), 'utf8'));
       resolution = new Map(r);
       console.log(`Loaded resolution for ${resolution.size} markets from cache.`);
     } catch {
@@ -153,15 +194,15 @@ async function main() {
   }
 
   // --- artifacts ---
-  writeLedgerCsv(join(args.out, 'ledger.csv'), tickets);
-  writeDistributionCsv(join(args.out, 'convexity_resolved.csv'), realizedDist);
-  if (allInDist) writeDistributionCsv(join(args.out, 'convexity_allin.csv'), allInDist);
+  writeLedgerCsv(join(outDir, 'ledger.csv'), tickets);
+  writeDistributionCsv(join(outDir, 'convexity_resolved.csv'), realizedDist);
+  if (allInDist) writeDistributionCsv(join(outDir, 'convexity_allin.csv'), allInDist);
   writeFileSync(
-    join(args.out, 'summary.json'),
-    JSON.stringify({ summary, realizedDist, allInDist, reconciliation: rec }, null, 2)
+    join(outDir, 'summary.json'),
+    JSON.stringify({ wallet, summary, realizedDist, allInDist, reconciliation: rec }, null, 2)
   );
 
-  console.log(`\nArtifacts written to ${args.out}/`);
+  console.log(`\nArtifacts written to ${outDir}/`);
   console.log('  activity.json / positions.json / closed-positions.json / resolution.json');
   console.log('  ledger.csv            (one row per ticket)');
   console.log('  convexity_resolved.csv / summary.json');

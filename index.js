@@ -2,14 +2,18 @@
 // index.js — rebuild a Polymarket wallet's realized ledger + convexity distribution.
 //
 // Usage:
-//   node index.js <wallet> [--out ./out] [--no-gamma] [--include-open]
+//   node index.js [wallet] [--out ./out] [--no-gamma] [--include-open]
 //   node index.js --offline ./out/activity.json [--positions ./out/positions.json]
+//
+// Wallet: pass as first arg, or set WALLET_ADDRESS in .env / environment.
+// CLI arg overrides WALLET_ADDRESS when both are set.
 //
 // Live pull writes raw dumps so you can re-run analysis offline without re-hitting
 // the API (and so the pull is auditable).
 
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { loadEnv } from './lib/env.js';
 import { fetchAllActivity, fetchAllPositions, fetchResolution } from './lib/api.js';
 import { buildTickets, classifyTickets, reconciliation } from './lib/ledger.js';
 import { convexityDistribution, portfolioSummary } from './lib/convexity.js';
@@ -33,6 +37,7 @@ function parseArgs(argv) {
 }
 
 async function main() {
+  loadEnv();
   const args = parseArgs(process.argv.slice(2));
   mkdirSync(args.out, { recursive: true });
 
@@ -43,9 +48,14 @@ async function main() {
     activity = JSON.parse(readFileSync(args.offline, 'utf8'));
     positions = args.positions ? JSON.parse(readFileSync(args.positions, 'utf8')) : [];
   } else {
-    const wallet = (args._[0] || '').toLowerCase();
+    const wallet = (args._[0] || process.env.WALLET_ADDRESS || '').toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(wallet)) {
-      console.error('Provide a wallet address: node index.js 0x...  (or --offline activity.json)');
+      console.error(
+        'Provide a wallet address:\n' +
+        '  node index.js 0x...                    (CLI arg)\n' +
+        '  WALLET_ADDRESS=0x... in .env           (env var)\n' +
+        '  node index.js --offline activity.json  (offline mode)'
+      );
       process.exit(1);
     }
     console.log(`Pulling full activity ledger for ${wallet} ...`);

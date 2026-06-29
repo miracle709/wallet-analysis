@@ -1,6 +1,14 @@
 // test/selftest.js — validates the reconstruction + convexity math offline,
 // since the container can't reach Polymarket's API domains.
-import { buildTickets, classifyTickets, reconciliation } from '../lib/ledger.js';
+import {
+  buildTickets,
+  buildTicketsFromPositions,
+  buildPositionIndex,
+  mergeTickets,
+  applyPolymarketPnL,
+  classifyTickets,
+  reconciliation,
+} from '../lib/ledger.js';
 import { convexityDistribution, portfolioSummary } from '../lib/convexity.js';
 
 let failures = 0;
@@ -110,6 +118,73 @@ const s = portfolioSummary(tickets);
 check('portfolio tickets=6', s.tickets === 6, s.tickets, 6);
 check('portfolio nResolved=4', s.nResolved === 4, s.nResolved, 4);
 check('portfolio totalPnl ~-567.01', near(s.totalPnl, -567.009, 0.05), s.totalPnl, -567.009);
+
+console.log('\n--- Polymarket overlay ---');
+const pmOpen = [
+  {
+    asset: 'E',
+    conditionId: 'cE',
+    title: 'Open tail',
+    outcome: 'Yes',
+    outcomeIndex: 0,
+    avgPrice: 0.02,
+    initialValue: 4,
+    currentValue: 10,
+    cashPnl: 6,
+    realizedPnl: 0,
+    size: 200,
+    curPrice: 0.05,
+  },
+];
+const pmClosed = [
+  {
+    asset: 'C',
+    conditionId: 'cC',
+    title: 'France WC',
+    outcome: 'Yes',
+    outcomeIndex: 0,
+    avgPrice: 0.017,
+    totalBought: 700,
+    realizedPnl: 58.1,
+    curPrice: 0,
+  },
+];
+const pmActivity = [ev(C, 'TRADE', 'BUY', 700, 0.017, 120), ev(C, 'TRADE', 'SELL', 700, 0.10, 220)];
+const pmActivityTickets = buildTickets(pmActivity);
+const pmPositionTickets = buildTicketsFromPositions(pmOpen, pmClosed);
+let pmTickets = mergeTickets(pmActivityTickets, pmPositionTickets);
+const pmIndex = buildPositionIndex(pmOpen, pmClosed);
+applyPolymarketPnL(pmTickets, pmIndex);
+classifyTickets(pmTickets, new Map(), pmOpen);
+check('overlay C realizedPnl from PM', near(pmTickets.get('C').realizedPnl, 58.1), pmTickets.get('C').realizedPnl, 58.1);
+check('overlay C pnlSource polymarket', pmTickets.get('C').pnlSource === 'polymarket', pmTickets.get('C').pnlSource, 'polymarket');
+check('overlay E unrealized from PM', near(pmTickets.get('E').unrealizedPnl, 6), pmTickets.get('E').unrealizedPnl, 6);
+check('overlay E totalPnl', near(pmTickets.get('E').totalPnl, 6), pmTickets.get('E').totalPnl, 6);
+const pmRec = reconciliation(pmTickets);
+check('overlay recon maxAbs < $0.01', pmRec.maxAbs < 0.01, pmRec.maxAbs, 0);
+
+console.log('\n--- position-only merge ---');
+const posOnly = buildTicketsFromPositions(
+  [{ asset: 'G', conditionId: 'cG', title: 'Smith 2028', outcome: 'No', outcomeIndex: 1, avgPrice: 0.5, initialValue: 100, currentValue: 197.9, cashPnl: 97.9, realizedPnl: 0, size: 200, curPrice: 0.9895 }],
+  []
+);
+const merged = mergeTickets(new Map(), posOnly);
+applyPolymarketPnL(merged, buildPositionIndex([{ asset: 'G', conditionId: 'cG', title: 'Smith 2028', outcome: 'No', outcomeIndex: 1, avgPrice: 0.5, initialValue: 100, currentValue: 197.9, cashPnl: 97.9, realizedPnl: 0, size: 200, curPrice: 0.9895 }], []));
+check('merge includes position-only ticket', merged.has('G'), merged.has('G'), true);
+check('merge Smith totalPnl ~97.9', near(merged.get('G').totalPnl, 97.9), merged.get('G').totalPnl, 97.9);
+const mergedSummary = portfolioSummary(merged);
+check('merge portfolio tickets=1', mergedSummary.tickets === 1, mergedSummary.tickets, 1);
+
+console.log('\n--- split cost fallback ---');
+const splitMeta = { conditionId: 'cSplit', title: 'Fed Chair', outcome: 'Yes', outcomeIndex: 0 };
+const splitActivity = [
+  { ...splitMeta, asset: '', type: 'SPLIT', size: 100, usdcSize: 100, timestamp: 1 },
+  { ...splitMeta, asset: 'S1', type: 'TRADE', side: 'SELL', size: 80, usdcSize: 78.4, price: 0.98, timestamp: 2 },
+];
+const splitTickets = buildTickets(splitActivity);
+const s1 = splitTickets.get('S1');
+check('split fallback vwapEntry ~0.50', near(s1.vwapEntry, 0.5), s1.vwapEntry, 0.5);
+check('split fallback realizedPnl ~38.4', near(s1.realizedPnl, 38.4), s1.realizedPnl, 38.4);
 
 console.log(`\n${failures === 0 ? '✅ ALL CHECKS PASSED' : `❌ ${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

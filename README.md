@@ -28,11 +28,11 @@ node index.js 0xYourWalletAddressHere
 
 ## What it does
 
-1. **Pull** — Fetches the complete activity ledger and current positions from the [Polymarket Data API](https://data-api.polymarket.com).
+1. **Pull** — Fetches the complete activity ledger, current positions, and closed positions from the [Polymarket Data API](https://data-api.polymarket.com).
 2. **Resolve** — Looks up market outcomes via the [Gamma API](https://gamma-api.polymarket.com) for tickets that were held to resolution.
-3. **Reconstruct** — Collapses raw events (`TRADE`, `REDEEM`, `SPLIT`, `MERGE`, `REWARD`, `CONVERSION`) into one record per outcome token, with VWAP entry, proceeds, realized P&amp;L, and status.
+3. **Reconstruct** — Collapses raw events (`TRADE`, `REDEEM`, `SPLIT`, `MERGE`, `REWARD`, `CONVERSION`) into one record per outcome token. **P&L is sourced from Polymarket's position APIs** (`realizedPnl`, `cashPnl`, `avgPrice`, `currentValue`) when available; activity reconstruction is used for event history and as a fallback when position data is absent.
 4. **Analyze** — Prints a portfolio rollup and convexity distribution table; writes CSV and JSON artifacts for further analysis.
-5. **Reconcile** — Cross-checks reconstructed realized P&amp;L against `positions.realizedPnl` so field mismatches surface early.
+5. **Reconcile** — Validates that overlaid `realizedPnl` matches `positions.realizedPnl` within $0.01.
 
 ## CLI reference
 
@@ -57,7 +57,7 @@ Live runs write raw API dumps so you can re-analyze without hitting the network:
 node index.js --offline ./out/activity.json --positions ./out/positions.json
 ```
 
-If `resolution.json` exists in the output directory, it is loaded automatically.
+If `resolution.json` and `closed-positions.json` exist in the output directory, they are loaded automatically.
 
 ## Output artifacts
 
@@ -66,7 +66,8 @@ All files are written to `--out` (default `./out/`):
 | File | Description |
 |------|-------------|
 | `activity.json` | Raw activity feed from the Data API |
-| `positions.json` | Current positions snapshot |
+| `positions.json` | Current open positions snapshot |
+| `closed-positions.json` | Closed positions with realized P&L from the Data API |
 | `resolution.json` | Cached Gamma market resolutions |
 | `ledger.csv` | One row per ticket (cost, proceeds, P&amp;L, status) |
 | `convexity_resolved.csv` | Distribution table for resolved tickets only |

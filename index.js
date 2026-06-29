@@ -11,11 +11,19 @@
 // Live pull writes raw dumps so you can re-run analysis offline without re-hitting
 // the API (and so the pull is auditable).
 
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadEnv } from './lib/env.js';
-import { fetchAllActivity, fetchAllPositions, fetchResolution } from './lib/api.js';
-import { buildTickets, classifyTickets, reconciliation } from './lib/ledger.js';
+import { fetchAllActivity, fetchAllPositions, fetchAllClosedPositions, fetchResolution } from './lib/api.js';
+import {
+  buildTickets,
+  buildTicketsFromPositions,
+  buildPositionIndex,
+  mergeTickets,
+  applyPolymarketPnL,
+  classifyTickets,
+  reconciliation,
+} from './lib/ledger.js';
 import { convexityDistribution, portfolioSummary } from './lib/convexity.js';
 import {
   printPortfolio, printDistribution, printReconciliation,
@@ -36,17 +44,34 @@ function parseArgs(argv) {
   return a;
 }
 
+function loadClosedPositions(outDir, positionsPath) {
+  const closedPath = join(outDir, 'closed-positions.json');
+  if (existsSync(closedPath)) {
+    return JSON.parse(readFileSync(closedPath, 'utf8'));
+  }
+  if (positionsPath) {
+    const dir = join(positionsPath, '..');
+    const sibling = join(dir, 'closed-positions.json');
+    if (existsSync(sibling)) return JSON.parse(readFileSync(sibling, 'utf8'));
+  }
+  return [];
+}
+
 async function main() {
   loadEnv();
   const args = parseArgs(process.argv.slice(2));
   mkdirSync(args.out, { recursive: true });
 
-  let activity, positions;
+  let activity, positions, closedPositions;
 
   if (args.offline) {
     console.log(`Loading activity from ${args.offline}`);
     activity = JSON.parse(readFileSync(args.offline, 'utf8'));
     positions = args.positions ? JSON.parse(readFileSync(args.positions, 'utf8')) : [];
+    closedPositions = loadClosedPositions(args.out, args.positions);
+    if (closedPositions.length) {
+      console.log(`Loaded ${closedPositions.length} closed positions from cache.`);
+    }
   } else {
     const wallet = (args._[0] || process.env.WALLET_ADDRESS || '').toLowerCase();
     if (!/^0x[0-9a-f]{40}$/.test(wallet)) {
@@ -68,13 +93,27 @@ async function main() {
       onPage: (total) => process.stdout.write(`\r  positions: ${total}   `),
     });
     process.stdout.write('\n');
+    console.log(`Pulling closed positions ...`);
+    closedPositions = await fetchAllClosedPositions(wallet, {
+      onPage: (total) => process.stdout.write(`\r  closed positions: ${total}   `),
+    });
+    process.stdout.write('\n');
 
     writeFileSync(join(args.out, 'activity.json'), JSON.stringify(activity, null, 0));
     writeFileSync(join(args.out, 'positions.json'), JSON.stringify(positions, null, 0));
+    writeFileSync(join(args.out, 'closed-positions.json'), JSON.stringify(closedPositions, null, 0));
   }
 
   console.log(`\nReconstructing tickets from ${activity.length} events ...`);
-  const tickets = buildTickets(activity);
+  const activityTickets = buildTickets(activity);
+  const positionTickets = buildTicketsFromPositions(positions, closedPositions);
+  let tickets = mergeTickets(activityTickets, positionTickets);
+
+  const positionIndex = buildPositionIndex(positions, closedPositions);
+  if (positionIndex.size) {
+    console.log(`Applying Polymarket P&L for ${positionIndex.size} positions ...`);
+    applyPolymarketPnL(tickets, positionIndex);
+  }
 
   let resolution = new Map();
   if (args.gamma && !args.offline) {
@@ -86,7 +125,6 @@ async function main() {
       JSON.stringify([...resolution.entries()], null, 0)
     );
   } else if (args.offline) {
-    // try to reuse a sibling resolution dump if present
     try {
       const r = JSON.parse(readFileSync(join(args.out, 'resolution.json'), 'utf8'));
       resolution = new Map(r);
@@ -124,7 +162,7 @@ async function main() {
   );
 
   console.log(`\nArtifacts written to ${args.out}/`);
-  console.log('  activity.json / positions.json / resolution.json  (raw dumps)');
+  console.log('  activity.json / positions.json / closed-positions.json / resolution.json');
   console.log('  ledger.csv            (one row per ticket)');
   console.log('  convexity_resolved.csv / summary.json');
 }

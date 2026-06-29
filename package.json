@@ -1,0 +1,16 @@
+{
+  "name": "poly-ledger",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Reconstruct a Polymarket wallet's full realized ledger and compute its convexity distribution (hit rate, payoff multiples, expectancy per cent-bucket).",
+  "bin": {
+    "poly-ledger": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test/selftest.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
